@@ -2,9 +2,26 @@
 
 简洁美观的 FFmpeg 图形界面工具（Python + PySide6 / Qt6，深色主题，中文界面）。
 
-当前为 **v0.4**：转换、剪辑、音频工具、视频拼接、水印/字幕五大模块可用，其余模块在界面中以「待开发」占位。
+当前为 **v0.5**：转换、剪辑、音频工具、视频拼接、水印/字幕、设置六大模块可用，可打包为独立 exe 分发。
 
 ## 功能
+
+### 设置与性能（v0.5）
+
+- **设置页**：ffmpeg / ffprobe 路径自定义（带可用性测试）、默认输出目录（各页自动套用）、任务并发数（1-4）、恢复默认
+- **GPU 硬件加速**：一键检测 NVENC / QSV / AMF（逐个试编码，防止"列表里有但驱动不可用"的误报），勾选后所有 H.264 重编码任务自动替换为硬件编码器（质量参数自动换算：NVENC `-cq`、QSV `-global_quality`、AMF quality 档）
+- **任务并发**：队列支持多 worker，认领机制防止重复执行；无损快转类任务可开高并发
+- 设置持久化于 `%LOCALAPPDATA%\FFmpegUI\settings.json`，修改即时保存
+
+### 打包分发（v0.5）
+
+```bash
+python -m pip install pyinstaller
+python -m PyInstaller --noconfirm --clean --windowed --name FFmpegUI launch.py
+```
+
+产物在 `dist\FFmpegUI\`（约 110MB，PySide6 运行时），整个文件夹拷给对方即可；
+目标机器需已安装 FFmpeg 并加入 PATH（或用设置页指定路径）。
 
 ### 水印 / 字幕（v0.4）
 
@@ -75,9 +92,8 @@ python -m app.main
 
 | 版本 | 模块 | 内容 |
 |---|---|---|
-| v0.5 | 设置 + 打包 | ffmpeg 路径、默认输出目录、并发数；PyInstaller 单文件 exe |
-| v0.5 | 性能 | GPU 编码自动检测（NVENC/QSV/AMF）、任务并发 |
-| 远期 | 录屏 / 下载 | 桌面录制、直播流拉流；任务历史、自定义预设 |
+| v0.6 | 录屏 / 下载 | 桌面录制、直播流拉流 |
+| 远期 | — | 任务历史、自定义预设保存、多语言 |
 
 ## 架构
 
@@ -91,6 +107,8 @@ app/
 │   ├── merging.py       # 拼接：兼容性检查 + concat/重编码合并
 │   ├── watermark.py     # 水印/字幕命令构建（临时文件规避转义）
 │   ├── whisper.py       # AI 字幕：模型下载 + 识别生成 SRT
+│   ├── gpu.py           # 硬件编码检测 + 参数替换
+│   ├── settings.py      # 设置持久化（路径/输出目录/并发/GPU）
 │   ├── probe.py         # ffprobe JSON 探测
 │   ├── runner.py        # 任务构建 + ffmpeg 执行（进度/取消/临时文件/多输入）
 │   └── queue.py         # 串行任务队列（后台线程）
@@ -101,12 +119,15 @@ app/
     ├── audio_page.py    # 音频工具页
     ├── merge_page.py    # 视频拼接页
     ├── watermark_page.py # 水印/字幕页（含 AI 字幕）
+    ├── settings_page.py  # 设置页（路径/并发/GPU 检测）
     ├── file_row.py      # 转换/音频页文件行控件
-    └── widgets.py       # 共享控件（拖放区、预设卡片）
+    └── widgets.py       # 共享控件（拖放区、预设卡片、默认目录）
 test/smoke.py            # 转换核心冒烟测试
 test/smoke_clip.py       # 剪辑核心冒烟测试
 test/smoke_av.py         # 音频与拼接冒烟测试
 test/smoke_wm.py         # 水印与字幕冒烟测试
+test/smoke_settings.py   # 设置/GPU/并发冒烟测试
+launch.py                # PyInstaller 打包入口
 ```
 
 whisper 模型存放在 `%LOCALAPPDATA%\FFmpegUI\models`（base 148MB / small 445MB，

@@ -18,6 +18,7 @@ from app.core.clipping import (ENCODE_PRESET_IDS, build_merge, build_segment,
                                detect_crop, probe_keyframes)
 from app.core.presets import get_preset
 from app.core.runner import Task
+from app.ui.widgets import apply_default_out_dir
 
 FFPLAY = os.environ.get("FFPLAY_PATH", "ffplay")
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
@@ -271,6 +272,7 @@ class ClipPage(QWidget):
         self.setAcceptDrops(True)
         self._build_ui()
         self._connect()
+        apply_default_out_dir(self, self.dir_chip)
 
     # ==================================================================
     def _build_ui(self):

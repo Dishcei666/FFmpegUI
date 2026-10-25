@@ -43,6 +43,8 @@ def main():
                 win.merge_page.add_paths(arg_paths)
             elif page == "wm":
                 win.watermark_page.load_file(arg_paths[0])
+            elif page == "settings":
+                pass
     else:
         page = os.environ.get("FFGUI_PAGE")
         if page:

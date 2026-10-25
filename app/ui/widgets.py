@@ -1,8 +1,21 @@
 # -*- coding: utf-8 -*-
-"""跨页面共享的小控件：拖放区、预设卡片。"""
+"""跨页面共享的小控件：拖放区、预设卡片、默认输出目录应用。"""
+import os
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton,
                                QVBoxLayout)
+
+
+def apply_default_out_dir(page, *chips):
+    """若设置里配置了默认输出目录，应用到页面并更新按钮文案。"""
+    from app.core import settings
+    out_dir = settings.get("out_dir")
+    if out_dir and os.path.isdir(out_dir):
+        page._out_dir = out_dir
+        shown = out_dir if len(out_dir) <= 44 else "…" + out_dir[-43:]
+        for chip in chips:
+            chip.setText(f"📁  输出到：{shown}")
 
 
 class DropZone(QFrame):

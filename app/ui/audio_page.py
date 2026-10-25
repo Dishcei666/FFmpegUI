@@ -13,7 +13,7 @@ from app.core.audio import AUDIO_PRESETS, build_audio
 from app.core.probe import probe_file
 from app.core.runner import Task
 from app.ui.file_row import FileRow
-from app.ui.widgets import DropZone, PresetCard
+from app.ui.widgets import DropZone, PresetCard, apply_default_out_dir
 
 
 class _AudioBridge(QObject):
@@ -33,6 +33,7 @@ class AudioPage(QWidget):
         self.setAcceptDrops(True)
         self._build_ui()
         self._connect()
+        apply_default_out_dir(self, self.dir_chip)
         self._refresh()
 
     # ==================================================================

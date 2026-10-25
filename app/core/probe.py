@@ -7,7 +7,8 @@ import json
 import os
 import subprocess
 
-FFPROBE = os.environ.get("FFPROBE_PATH", "ffprobe")
+from . import settings
+
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 
@@ -16,7 +17,7 @@ def probe_file(path):
 
     阻塞调用（通常 < 100ms），批量探测请在后台线程进行。
     """
-    cmd = [FFPROBE, "-v", "quiet", "-print_format", "json",
+    cmd = [settings.ffprobe(), "-v", "quiet", "-print_format", "json",
            "-show_format", "-show_streams", path]
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=30,

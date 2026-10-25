@@ -15,6 +15,7 @@ from app.core.presets import get_preset
 from app.core.probe import probe_file
 from app.core.runner import Task
 from app.core.utils import fmt_duration, fmt_fps
+from app.ui.widgets import apply_default_out_dir
 
 
 def _repolish(w):
@@ -103,6 +104,7 @@ class MergePage(QWidget):
         self.setAcceptDrops(True)
         self._build_ui()
         self._connect()
+        apply_default_out_dir(self, self.dir_chip)
         self._refresh()
 
     # ==================================================================

@@ -12,17 +12,19 @@ from PySide6.QtWidgets import (QButtonGroup, QFileDialog, QFrame, QGridLayout,
                                QStackedWidget, QVBoxLayout, QWidget)
 from PySide6.QtCore import QUrl
 
+from app.core import settings
 from app.core.presets import PRESETS
 from app.core.probe import probe_file
 from app.core.queue import TaskQueue
-from app.core.runner import FFMPEG, Task
+from app.core.runner import Task
 from app.core.utils import fmt_size
 from app.ui.audio_page import AudioPage
 from app.ui.clip_page import ClipPage
 from app.ui.file_row import FileRow
 from app.ui.merge_page import MergePage
+from app.ui.settings_page import SettingsPage
 from app.ui.watermark_page import WatermarkPage
-from app.ui.widgets import DropZone, PresetCard
+from app.ui.widgets import DropZone, PresetCard, apply_default_out_dir
 
 VIDEO_EXT = {"mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "ts",
              "mpg", "mpeg", "3gp", "vob", "m2ts", "mts", "rmvb", "rm", "ogv"}
@@ -32,13 +34,12 @@ ALL_EXT = VIDEO_EXT | AUDIO_EXT
 
 # 侧栏"待开发"模块：名称 -> 计划版本
 PLANNED_MODULES = [
-    ("录屏 / 下载", "0.5"),
-    ("设置", "0.5"),
+    ("录屏 / 下载", "0.6"),
 ]
 
 # 已上线页面：导航名 -> (图标, 页面索引)
 PAGES = [("转换", "🔄", 0), ("剪辑", "✂️", 1), ("音频工具", "🎵", 2),
-         ("视频拼接", "🔗", 3), ("水印 / 字幕", "🏷️", 4)]
+         ("视频拼接", "🔗", 3), ("水印 / 字幕", "🏷️", 4), ("设置", "⚙️", 5)]
 
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
@@ -69,11 +70,14 @@ class MainWindow(QMainWindow):
 
         self._bridge = _Bridge()
         self.queue = TaskQueue(on_event=self._bridge.events.emit,
-                               on_log=lambda i, l: self._bridge.logs.emit(i, l))
+                               on_log=lambda i, l: self._bridge.logs.emit(i, l),
+                               concurrency_provider=lambda: settings.get(
+                                   "concurrency"))
 
         self._build_ui()
         self._connect()
         self._detect_ffmpeg()
+        apply_default_out_dir(self, self.dir_chip)
         self._refresh()
 
     # ==================================================================
@@ -206,6 +210,8 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.merge_page)      # 页 3：视频拼接
         self.watermark_page = WatermarkPage(self)
         self.stack.addWidget(self.watermark_page)  # 页 4：水印/字幕
+        self.settings_page = SettingsPage(self)
+        self.stack.addWidget(self.settings_page)   # 页 5：设置
         root_layout.addWidget(self.stack, 1)
         self.setCentralWidget(root)
 
@@ -247,7 +253,7 @@ class MainWindow(QMainWindow):
 
         layout.addSpacing(10)
         layout.addWidget(self._nav_section_label("即将推出"))
-        icons = {"录屏 / 下载": "⏺️", "设置": "⚙️"}
+        icons = {"录屏 / 下载": "⏺️"}
         for name, ver in PLANNED_MODULES:
             layout.addWidget(self._nav_item(icons[name], name,
                                             badge="待开发", ver=ver))
@@ -262,7 +268,7 @@ class MainWindow(QMainWindow):
         self.foot_status = QLabel("正在检测 ffmpeg…")
         self.foot_status.setObjectName("FootStatus")
         self.foot_status.setWordWrap(True)
-        self.foot_ver = QLabel("v0.4 · 水印字幕与 AI 字幕已上线")
+        self.foot_ver = QLabel("v0.5 · 设置与硬件加速已上线")
         self.foot_ver.setObjectName("FootVer")
         foot_layout.addWidget(self.foot_status)
         foot_layout.addWidget(self.foot_ver)
@@ -501,7 +507,8 @@ class MainWindow(QMainWindow):
     def _detect_ffmpeg(self):
         def work():
             try:
-                proc = subprocess.run([FFMPEG, "-version"], capture_output=True,
+                proc = subprocess.run([settings.ffmpeg(), "-version"],
+                                      capture_output=True,
                                       timeout=5, creationflags=_NO_WINDOW)
                 first = proc.stdout.decode("utf-8", "ignore").splitlines()
                 ver = first[0].split()[2] if first and len(first[0].split()) > 2 else "?"
@@ -548,9 +555,9 @@ class MainWindow(QMainWindow):
         self.dir_chip.setEnabled(not self._busy)
 
     def show_page(self, name):
-        """切换页面：'convert' / 'clip' / 'audio' / 'merge' / 'wm'。"""
+        """切换页面：'convert' / 'clip' / 'audio' / 'merge' / 'wm' / 'settings'。"""
         index = {"convert": 0, "clip": 1, "audio": 2, "merge": 3,
-                 "wm": 4}.get(name, 0)
+                 "wm": 4, "settings": 5}.get(name, 0)
         self.nav_group.button(index).setChecked(True)
         self.stack.setCurrentIndex(index)
 

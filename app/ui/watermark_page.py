@@ -20,6 +20,7 @@ from app.core.utils import fmt_size
 from app.core.watermark import SUBTITLE_STYLES, build_image_watermark, \
     build_subtitle, build_text_watermark
 from app.core.whisper import MODELS, download_model, is_downloaded, transcribe
+from app.ui.widgets import apply_default_out_dir
 
 SWATCH_COLORS = ["#FFFFFF", "#000000", "#FF4D4D", "#FFD21F", "#4D9FFF",
                  "#3DDC84"]
@@ -94,6 +95,7 @@ class WatermarkPage(QWidget):
         self.setAcceptDrops(True)
         self._build_ui()
         self._connect()
+        apply_default_out_dir(self, self.dir_chip, self.dir_chip_main)
         self._refresh()
         self._update_model_status()
 

@@ -11,7 +11,8 @@ import subprocess
 import tempfile
 import urllib.request
 
-FFMPEG = os.environ.get("FFMPEG_PATH", "ffmpeg")
+from . import settings
+
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 _URL = "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/{file}"
 
@@ -94,7 +95,7 @@ def transcribe(media_path, model_name, language, srt_out, duration=0.0,
     af = (f"whisper=model={escape_filter_path(model)}"
           f":destination={escape_filter_path(tmp_srt)}"
           f":format=srt:language={lang}")
-    cmd = [FFMPEG, "-hide_banner", "-nostdin", "-y",
+    cmd = [settings.ffmpeg(), "-hide_banner", "-nostdin", "-y",
            "-progress", "pipe:1", "-nostats",
            "-i", media_path, "-af", af, "-f", "null", "-"]
     try:

@@ -12,8 +12,18 @@ import subprocess
 import threading
 import time
 
-FFMPEG = os.environ.get("FFMPEG_PATH", "ffmpeg")
+from . import settings
+
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+
+def _final_args(task):
+    """按设置应用硬件编码替换（含 libx264 的参数才替换）。"""
+    args = list(task.preset["args"])
+    if settings.get("prefer_gpu") and settings.get("hw_encoder"):
+        from . import gpu
+        args = gpu.apply_hw_args(args, settings.get("hw_encoder"))
+    return args
 
 
 class Task:
@@ -88,9 +98,9 @@ def run_task(task, on_progress=None, on_log=None):
         input_part = task.input_args
     else:
         input_part = [*task.input_args, "-i", task.input_path]
-    args = [FFMPEG, "-hide_banner", "-nostdin", "-y",
+    args = [settings.ffmpeg(), "-hide_banner", "-nostdin", "-y",
             "-progress", "pipe:1", "-nostats",
-            *input_part, *task.preset["args"], task.temp_path]
+            *input_part, *_final_args(task), task.temp_path]
     task.status = "running"
     task._started_at = time.time()
     _emit(task, on_progress, force=True)
