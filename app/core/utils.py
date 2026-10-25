@@ -1,5 +1,17 @@
 # -*- coding: utf-8 -*-
-"""展示用的格式化工具。"""
+"""展示用的格式化工具与滤镜路径转义。"""
+import os
+
+
+def escape_filter_path(path):
+    """把 Windows 路径转成 ffmpeg 滤镜参数里可用的形式。
+
+    滤镜参数有两层解析（图级 + 选项级）：单引号防图级切分，
+    冒号前加反斜杠防选项级切分。路径中含单引号的场景由调用方
+    用临时文件规避（本项目所有内嵌路径均为受控/临时路径）。
+    """
+    p = os.path.abspath(path).replace("\\", "/")
+    return "'" + p.replace(":", r"\:") + "'"
 
 
 def fmt_duration(sec):

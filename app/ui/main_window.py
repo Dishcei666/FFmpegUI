@@ -21,6 +21,7 @@ from app.ui.audio_page import AudioPage
 from app.ui.clip_page import ClipPage
 from app.ui.file_row import FileRow
 from app.ui.merge_page import MergePage
+from app.ui.watermark_page import WatermarkPage
 from app.ui.widgets import DropZone, PresetCard
 
 VIDEO_EXT = {"mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "ts",
@@ -31,14 +32,13 @@ ALL_EXT = VIDEO_EXT | AUDIO_EXT
 
 # 侧栏"待开发"模块：名称 -> 计划版本
 PLANNED_MODULES = [
-    ("水印 / 字幕", "0.2"),
-    ("录屏 / 下载", "0.3"),
-    ("设置", "0.2"),
+    ("录屏 / 下载", "0.5"),
+    ("设置", "0.5"),
 ]
 
 # 已上线页面：导航名 -> (图标, 页面索引)
 PAGES = [("转换", "🔄", 0), ("剪辑", "✂️", 1), ("音频工具", "🎵", 2),
-         ("视频拼接", "🔗", 3)]
+         ("视频拼接", "🔗", 3), ("水印 / 字幕", "🏷️", 4)]
 
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
@@ -204,6 +204,8 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.audio_page)      # 页 2：音频工具
         self.merge_page = MergePage(self)
         self.stack.addWidget(self.merge_page)      # 页 3：视频拼接
+        self.watermark_page = WatermarkPage(self)
+        self.stack.addWidget(self.watermark_page)  # 页 4：水印/字幕
         root_layout.addWidget(self.stack, 1)
         self.setCentralWidget(root)
 
@@ -245,7 +247,7 @@ class MainWindow(QMainWindow):
 
         layout.addSpacing(10)
         layout.addWidget(self._nav_section_label("即将推出"))
-        icons = {"水印 / 字幕": "🏷️", "录屏 / 下载": "⏺️", "设置": "⚙️"}
+        icons = {"录屏 / 下载": "⏺️", "设置": "⚙️"}
         for name, ver in PLANNED_MODULES:
             layout.addWidget(self._nav_item(icons[name], name,
                                             badge="待开发", ver=ver))
@@ -260,7 +262,7 @@ class MainWindow(QMainWindow):
         self.foot_status = QLabel("正在检测 ffmpeg…")
         self.foot_status.setObjectName("FootStatus")
         self.foot_status.setWordWrap(True)
-        self.foot_ver = QLabel("v0.3 · 音频工具与拼接已上线")
+        self.foot_ver = QLabel("v0.4 · 水印字幕与 AI 字幕已上线")
         self.foot_ver.setObjectName("FootVer")
         foot_layout.addWidget(self.foot_status)
         foot_layout.addWidget(self.foot_ver)
@@ -546,8 +548,9 @@ class MainWindow(QMainWindow):
         self.dir_chip.setEnabled(not self._busy)
 
     def show_page(self, name):
-        """切换页面：'convert' / 'clip' / 'audio' / 'merge'。"""
-        index = {"convert": 0, "clip": 1, "audio": 2, "merge": 3}.get(name, 0)
+        """切换页面：'convert' / 'clip' / 'audio' / 'merge' / 'wm'。"""
+        index = {"convert": 0, "clip": 1, "audio": 2, "merge": 3,
+                 "wm": 4}.get(name, 0)
         self.nav_group.button(index).setChecked(True)
         self.stack.setCurrentIndex(index)
 

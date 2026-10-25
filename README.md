@@ -2,9 +2,17 @@
 
 简洁美观的 FFmpeg 图形界面工具（Python + PySide6 / Qt6，深色主题，中文界面）。
 
-当前为 **v0.3**：转换、剪辑、音频工具、视频拼接四大模块可用，其余模块在界面中以「待开发」占位。
+当前为 **v0.4**：转换、剪辑、音频工具、视频拼接、水印/字幕五大模块可用，其余模块在界面中以「待开发」占位。
 
 ## 功能
+
+### 水印 / 字幕（v0.4）
+
+- **文字水印**：内容、字号、6 种预设色 + 自定义取色、不透明度、边距，九宫格快速定位
+- **图片水印**：PNG/JPG 叠加，按视频宽度百分比缩放、不透明度、九宫格定位
+- **字幕烧录**：SRT / ASS，四种样式预设（白字黑边 / 黄字黑边 / 底部大字 / 跟随字幕自带样式）
+- **whisper AI 字幕**：本地识别语音直接生成 SRT（不上传网络），base / small 两档模型，一键下载（走 hf-mirror 镜像），生成后可直接烧录
+- 中文文本经临时文件写入规避滤镜转义；水印文字自动描边保证可读性
 
 ### 音频工具（v0.3）
 
@@ -67,7 +75,6 @@ python -m app.main
 
 | 版本 | 模块 | 内容 |
 |---|---|---|
-| v0.4 | 水印 / 字幕 | 图片/文字水印、SRT/ASS 烧录、**whisper AI 字幕生成**（本机 ffmpeg 已启用 whisper） |
 | v0.5 | 设置 + 打包 | ffmpeg 路径、默认输出目录、并发数；PyInstaller 单文件 exe |
 | v0.5 | 性能 | GPU 编码自动检测（NVENC/QSV/AMF）、任务并发 |
 | 远期 | 录屏 / 下载 | 桌面录制、直播流拉流；任务历史、自定义预设 |
@@ -82,6 +89,8 @@ app/
 │   ├── clipping.py      # 剪辑命令构建 + 关键帧/黑边探测
 │   ├── audio.py         # 音频预设 + 归一化/降噪链
 │   ├── merging.py       # 拼接：兼容性检查 + concat/重编码合并
+│   ├── watermark.py     # 水印/字幕命令构建（临时文件规避转义）
+│   ├── whisper.py       # AI 字幕：模型下载 + 识别生成 SRT
 │   ├── probe.py         # ffprobe JSON 探测
 │   ├── runner.py        # 任务构建 + ffmpeg 执行（进度/取消/临时文件/多输入）
 │   └── queue.py         # 串行任务队列（后台线程）
@@ -91,12 +100,17 @@ app/
     ├── clip_page.py     # 剪辑页（时间轴控件、预览、片段列表）
     ├── audio_page.py    # 音频工具页
     ├── merge_page.py    # 视频拼接页
+    ├── watermark_page.py # 水印/字幕页（含 AI 字幕）
     ├── file_row.py      # 转换/音频页文件行控件
     └── widgets.py       # 共享控件（拖放区、预设卡片）
 test/smoke.py            # 转换核心冒烟测试
 test/smoke_clip.py       # 剪辑核心冒烟测试
 test/smoke_av.py         # 音频与拼接冒烟测试
+test/smoke_wm.py         # 水印与字幕冒烟测试
 ```
+
+whisper 模型存放在 `%LOCALAPPDATA%\FFmpegUI\models`（base 148MB / small 445MB，
+首次使用在界面内一键下载）。
 
 关键实现：进度取自 `ffmpeg -progress pipe:1 -nostats` 的 `key=value` 输出；
 输出先写 `*.ffgui-tmp.*` 临时文件、成功后改名；剪辑用输入侧 `-ss/-t` 快速定位，

@@ -199,6 +199,20 @@ QCheckBox::indicator {
     border: 1px solid #33426f; background: #131826;
 }
 QCheckBox::indicator:checked { background: #6d7cff; border-color: #6d7cff; }
+QPushButton#GridCell { background: #131826; border: 1px solid #1f2740; border-radius: 6px; }
+QPushButton#GridCell:hover { border-color: #33426f; }
+QPushButton#GridCell:checked { background: rgba(109,124,255,0.35); border-color: #6d7cff; }
+QSlider::groove:horizontal { height: 4px; background: #1c2438; border-radius: 2px; }
+QSlider::sub-page:horizontal {
+    border-radius: 2px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                stop:0 #6d7cff, stop:1 #9a6dff);
+}
+QSlider::handle:horizontal {
+    width: 14px; height: 14px; margin: -5px 0; border-radius: 7px;
+    background: #dbe2f2;
+}
+QSlider::handle:horizontal:hover { background: #ffffff; }
 
 /* ---------------- 日志与杂项 ---------------- */
 QPlainTextEdit#LogPanel {
