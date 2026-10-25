@@ -1,0 +1,5 @@
+# GBK 编码的批处理：保持 CRLF，禁止 git 做编码/换行猜测
+*.bat text eol=crlf
+*.png binary
+*.mp4 binary
+*.mp3 binary
