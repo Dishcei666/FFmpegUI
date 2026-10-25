@@ -28,15 +28,23 @@ def main():
     win = MainWindow()
     win.show()
 
-    # 供演示 / 自动化验证：命令行传入的文件会自动加入列表
-    if len(sys.argv) > 1 and os.path.exists(sys.argv[1]):
-        win.add_paths([sys.argv[1]])
-
-    page = os.environ.get("FFGUI_PAGE")
-    if page:
-        win.show_page(page)
-        if page == "clip" and len(sys.argv) > 1 and os.path.exists(sys.argv[1]):
-            win.clip_page.load_file(sys.argv[1])
+    # 供演示 / 自动化验证：命令行传入的文件按页面自动加载
+    arg_paths = [p for p in sys.argv[1:] if os.path.exists(p)]
+    if arg_paths:
+        win.add_paths(arg_paths)
+        page = os.environ.get("FFGUI_PAGE")
+        if page:
+            win.show_page(page)
+            if page == "clip":
+                win.clip_page.load_file(arg_paths[0])
+            elif page == "audio":
+                win.audio_page.add_paths(arg_paths)
+            elif page == "merge":
+                win.merge_page.add_paths(arg_paths)
+    else:
+        page = os.environ.get("FFGUI_PAGE")
+        if page:
+            win.show_page(page)
 
     shot = os.environ.get("FFGUI_SCREENSHOT")
     if shot:

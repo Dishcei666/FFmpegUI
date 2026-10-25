@@ -17,8 +17,11 @@ from app.core.probe import probe_file
 from app.core.queue import TaskQueue
 from app.core.runner import FFMPEG, Task
 from app.core.utils import fmt_size
+from app.ui.audio_page import AudioPage
 from app.ui.clip_page import ClipPage
 from app.ui.file_row import FileRow
+from app.ui.merge_page import MergePage
+from app.ui.widgets import DropZone, PresetCard
 
 VIDEO_EXT = {"mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "ts",
              "mpg", "mpeg", "3gp", "vob", "m2ts", "mts", "rmvb", "rm", "ogv"}
@@ -34,7 +37,8 @@ PLANNED_MODULES = [
 ]
 
 # 已上线页面：导航名 -> (图标, 页面索引)
-PAGES = [("转换", "🔄", 0), ("剪辑", "✂️", 1)]
+PAGES = [("转换", "🔄", 0), ("剪辑", "✂️", 1), ("音频工具", "🎵", 2),
+         ("视频拼接", "🔗", 3)]
 
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
@@ -45,72 +49,6 @@ class _Bridge(QObject):
     logs = Signal(str, str)          # (任务id, 日志行)
     probeDone = Signal(str, object, str)   # (path, info|None, error)
     ffmpegInfo = Signal(bool, str)
-
-
-class DropZone(QFrame):
-    clicked = Signal()
-
-    def __init__(self):
-        super().__init__()
-        self.setObjectName("DropZone")
-        self.setFixedHeight(116)
-        self.setCursor(Qt.PointingHandCursor)
-
-        self.icon = QLabel("⇩")
-        self.icon.setObjectName("DropIcon")
-        self.icon.setAlignment(Qt.AlignCenter)
-        self.title = QLabel("拖入视频 / 音频文件")
-        self.title.setObjectName("DropTitle")
-        self.title.setAlignment(Qt.AlignCenter)
-        self.sub = QLabel("支持批量添加 MP4 / MKV / MP3 等常见格式，或点击选择文件")
-        self.sub.setObjectName("DropSub")
-        self.sub.setAlignment(Qt.AlignCenter)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(4)
-        layout.addStretch(1)
-        layout.addWidget(self.icon)
-        layout.addWidget(self.title)
-        layout.addWidget(self.sub)
-        layout.addStretch(1)
-
-    def set_compact(self, compact):
-        self.icon.setVisible(not compact)
-        self.sub.setVisible(not compact)
-        self.setFixedHeight(58 if compact else 116)
-
-    def set_hover(self, hover):
-        self.setProperty("hover", "true" if hover else "false")
-        self.style().unpolish(self)
-        self.style().polish(self)
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.clicked.emit()
-        super().mouseReleaseEvent(event)
-
-
-class PresetCard(QPushButton):
-    def __init__(self, preset):
-        super().__init__()
-        self.setObjectName("PresetCard")
-        self.setCheckable(True)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(68)
-        self.preset = preset
-
-        name = QLabel(preset["name"])
-        name.setObjectName("PresetName")
-        desc = QLabel(preset["desc"])
-        desc.setObjectName("PresetDesc")
-        desc.setWordWrap(True)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 9, 12, 9)
-        layout.setSpacing(2)
-        layout.addWidget(name)
-        layout.addWidget(desc)
 
 
 class MainWindow(QMainWindow):
@@ -262,6 +200,10 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(main)                 # 页 0：转换
         self.clip_page = ClipPage(self)
         self.stack.addWidget(self.clip_page)       # 页 1：剪辑
+        self.audio_page = AudioPage(self)
+        self.stack.addWidget(self.audio_page)      # 页 2：音频工具
+        self.merge_page = MergePage(self)
+        self.stack.addWidget(self.merge_page)      # 页 3：视频拼接
         root_layout.addWidget(self.stack, 1)
         self.setCentralWidget(root)
 
@@ -318,7 +260,7 @@ class MainWindow(QMainWindow):
         self.foot_status = QLabel("正在检测 ffmpeg…")
         self.foot_status.setObjectName("FootStatus")
         self.foot_status.setWordWrap(True)
-        self.foot_ver = QLabel("v0.2 · 剪辑已上线")
+        self.foot_ver = QLabel("v0.3 · 音频工具与拼接已上线")
         self.foot_ver.setObjectName("FootVer")
         foot_layout.addWidget(self.foot_status)
         foot_layout.addWidget(self.foot_ver)
@@ -407,17 +349,17 @@ class MainWindow(QMainWindow):
             self.toast(f"已跳过 {skipped} 个不支持的文件")
         if added:
             self.drop.set_compact(True)
-            threading.Thread(target=self._probe_worker, args=(added,),
-                             daemon=True).start()
+            for path in added:                   # 并行探测，互不排队
+                threading.Thread(target=self._probe_one, args=(path,),
+                                 daemon=True).start()
         self._refresh()
 
-    def _probe_worker(self, paths):
-        for path in paths:
-            try:
-                info = probe_file(path)
-                self._bridge.probeDone.emit(path, info, "")
-            except Exception as exc:            # noqa: BLE001 - 探测失败要展示给用户
-                self._bridge.probeDone.emit(path, None, str(exc))
+    def _probe_one(self, path):
+        try:
+            info = probe_file(path)
+            self._bridge.probeDone.emit(path, info, "")
+        except Exception as exc:                # noqa: BLE001 - 探测失败要展示给用户
+            self._bridge.probeDone.emit(path, None, str(exc))
 
     def _on_probe_done(self, path, info, error):
         item = self._files.get(path)
@@ -604,8 +546,8 @@ class MainWindow(QMainWindow):
         self.dir_chip.setEnabled(not self._busy)
 
     def show_page(self, name):
-        """切换页面：'convert' / 'clip'。"""
-        index = {"convert": 0, "clip": 1}.get(name, 0)
+        """切换页面：'convert' / 'clip' / 'audio' / 'merge'。"""
+        index = {"convert": 0, "clip": 1, "audio": 2, "merge": 3}.get(name, 0)
         self.nav_group.button(index).setChecked(True)
         self.stack.setCurrentIndex(index)
 
@@ -640,5 +582,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         if hasattr(self, "clip_page"):
             self.clip_page.shutdown()
+        if hasattr(self, "merge_page"):
+            self.merge_page.shutdown()
         self.queue.cancel_all()
         super().closeEvent(event)

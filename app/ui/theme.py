@@ -192,6 +192,13 @@ QRadioButton::indicator {
     border: 1px solid #33426f; background: #131826;
 }
 QRadioButton::indicator:checked { background: #6d7cff; border-color: #6d7cff; }
+QCheckBox { color: #98a2bb; font-size: 11.5px; spacing: 7px; background: transparent; }
+QCheckBox:disabled { color: #566080; }
+QCheckBox::indicator {
+    width: 14px; height: 14px; border-radius: 4px;
+    border: 1px solid #33426f; background: #131826;
+}
+QCheckBox::indicator:checked { background: #6d7cff; border-color: #6d7cff; }
 
 /* ---------------- 日志与杂项 ---------------- */
 QPlainTextEdit#LogPanel {
