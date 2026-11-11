@@ -13,7 +13,8 @@ from app.core.audio import AUDIO_PRESETS, build_audio
 from app.core.probe import probe_file
 from app.core.runner import Task
 from app.ui.file_row import FileRow
-from app.ui.widgets import DropZone, PresetCard, apply_default_out_dir
+from app.ui.widgets import (DropZone, PresetCard, apply_default_out_dir,
+                            set_page_out_dir)
 
 
 class _AudioBridge(QObject):
@@ -204,7 +205,7 @@ class AudioPage(QWidget):
 
     def _remove_file(self, path):
         item = self._files.get(path)
-        if item is None or item["status"] in ("queued", "running"):
+        if item is None or item["status"] in ("queued", "starting", "running"):
             return
         if item["tid"]:
             self._by_tid.pop(item["tid"], None)
@@ -292,9 +293,7 @@ class AudioPage(QWidget):
         directory = QFileDialog.getExistingDirectory(self, "选择输出目录",
                                                      self._out_dir or "")
         if directory:
-            self._out_dir = directory
-            shown = directory if len(directory) <= 44 else "…" + directory[-43:]
-            self.dir_chip.setText(f"📁  输出到：{shown}")
+            set_page_out_dir(self, directory)
 
     def _refresh(self):
         busy = bool(self._pending)

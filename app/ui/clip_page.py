@@ -18,9 +18,8 @@ from app.core.clipping import (ENCODE_PRESET_IDS, build_merge, build_segment,
                                detect_crop, probe_keyframes)
 from app.core.presets import get_preset
 from app.core.runner import Task
-from app.ui.widgets import apply_default_out_dir
+from app.ui.widgets import apply_default_out_dir, resolve_ffplay, set_page_out_dir
 
-FFPLAY = os.environ.get("FFPLAY_PATH", "ffplay")
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 ROTATE_ITEMS = [("不旋转", 0), ("顺时针 90°", 90), ("旋转 180°", 180),
@@ -39,9 +38,9 @@ def fmt_ts(t):
 
 
 class _ClipBridge(QObject):
-    fileProbed = Signal(bool, object, str)   # (ok, info|None, error)
-    keyframes = Signal(object)               # list[float] 或空
-    cropDone = Signal(str)                   # 'w:h:x:y' 或 ''
+    fileProbed = Signal(int, str, bool, object, str)
+    keyframes = Signal(int, str, object)
+    cropDone = Signal(int, str, str)
     posUpdate = Signal(float)
     playStopped = Signal()
 
@@ -232,6 +231,7 @@ class SegmentRow(QFrame):
         _repolish(self)
         text = {
             "queued": "排队中",
+            "starting": "启动中…",
             "running": f"导出中 {percent:.0f}%",
             "done": f"完成 · {fmt_took(took_ms)}",
             "error": "失败",
@@ -242,7 +242,7 @@ class SegmentRow(QFrame):
         _repolish(self.chip)
         self.chip.setToolTip(error if status == "error" else "")
         self.btn_open.setVisible(status == "done")
-        self.btn_del.setVisible(status not in ("queued", "running"))
+        self.btn_del.setVisible(status not in ("queued", "starting", "running"))
         if status == "done" and output_path:
             self._output = output_path
             self.out.setText("→ " + os.path.basename(output_path))
@@ -257,6 +257,9 @@ class ClipPage(QWidget):
         self.win = window                      # 复用主窗口的队列 / 提示 / 事件桥
         self._src = None
         self._info = None
+        self._load_request = 0
+        self._closed = False
+        self._crop_pending = False
         self._segments = []                    # [{start,end,task_id,row}]
         self._seg_by_id = {}
         self._pending = set()
@@ -533,7 +536,7 @@ class ClipPage(QWidget):
         self.spin_speed.valueChanged.connect(self._on_transform_changed)
 
         self._bridge.fileProbed.connect(self._on_file_probed)
-        self._bridge.keyframes.connect(self.timeline.set_keyframes)
+        self._bridge.keyframes.connect(self._on_keyframes)
         self._bridge.cropDone.connect(self._on_crop_done)
         self._bridge.posUpdate.connect(self._on_pos)
         self._bridge.playStopped.connect(self._on_play_stopped)
@@ -554,26 +557,34 @@ class ClipPage(QWidget):
             self.load_file(path)
 
     def load_file(self, path):
+        if self._pending or self._closed:
+            self.win.toast("请先等待或取消剪辑任务，再切换文件")
+            return
         self.stop_preview()
         self._clear_segments()
+        self._load_request += 1
+        request = self._load_request
+        self._crop_pending = False
         self._src = path
         self._info = None
         self.file_name.setText(os.path.basename(path))
         self.file_meta.setText("正在读取媒体信息…")
         self.timeline.set_keyframes([])
-        threading.Thread(target=self._probe_worker, args=(path,),
+        threading.Thread(target=self._probe_worker, args=(request, path),
                          daemon=True).start()
         self._refresh()
 
-    def _probe_worker(self, path):
+    def _probe_worker(self, request, path):
         from app.core.probe import probe_file
         try:
             info = probe_file(path)
-            self._bridge.fileProbed.emit(True, info, "")
+            self._bridge.fileProbed.emit(request, path, True, info, "")
         except Exception as exc:              # noqa: BLE001
-            self._bridge.fileProbed.emit(False, None, str(exc))
+            self._bridge.fileProbed.emit(request, path, False, None, str(exc))
 
-    def _on_file_probed(self, ok, info, error):
+    def _on_file_probed(self, request, path, ok, info, error):
+        if self._closed or request != self._load_request or path != self._src:
+            return
         if not ok:
             self.file_meta.setText("无法读取该文件")
             self.win.toast(f"剪辑：文件读取失败 - {error[:80]}")
@@ -601,15 +612,19 @@ class ClipPage(QWidget):
         size = info.get("size") or 0
         if size < 1_500_000_000:              # 过大文件跳过关键帧刻度
             threading.Thread(target=self._keyframe_worker,
-                             args=(self._src,), daemon=True).start()
+                             args=(request, path), daemon=True).start()
         self._refresh()
 
-    def _keyframe_worker(self, path):
+    def _keyframe_worker(self, request, path):
         try:
             times = probe_keyframes(path)
-            self._bridge.keyframes.emit(times)
+            self._bridge.keyframes.emit(request, path, times)
         except Exception:                      # noqa: BLE001 - 失败仅降级为无刻度
-            self._bridge.keyframes.emit([])
+            self._bridge.keyframes.emit(request, path, [])
+
+    def _on_keyframes(self, request, path, times):
+        if not self._closed and request == self._load_request and path == self._src:
+            self.timeline.set_keyframes(times)
 
     # ==================================================================
     # 选段 / 预览
@@ -639,15 +654,15 @@ class ClipPage(QWidget):
             return
         start, end = self.timeline.range()
         duration = max(0.1, end - start)
-        cmd = [FFPLAY, "-hide_banner", "-autoexit",
+        cmd = [resolve_ffplay(), "-hide_banner", "-autoexit",
                "-ss", f"{start:.3f}", "-t", f"{duration:.3f}",
                "-window_title", "FFmpegUI 片段预览", self._src]
         try:
             self._play_proc = subprocess.Popen(
                 cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                 creationflags=_NO_WINDOW)
-        except FileNotFoundError:
-            self.win.toast("未找到 ffplay，无法预览")
+        except OSError as exc:
+            self.win.toast(f"无法运行 ffplay：{str(exc)[:100]}")
             return
         self._playing = True
         self._live_pos = None
@@ -802,19 +817,27 @@ class ClipPage(QWidget):
             self.win.toast("已切换到精确剪切：裁切 / 旋转 / 变速需要重编码")
 
     def _detect_crop(self):
-        if not self._src:
+        if self._pending or self._crop_pending or not self._src or not self._info:
             self.win.toast("请先选择文件")
             return
         self.btn_detect.setEnabled(False)
+        self._crop_pending = True
+        request, path = self._load_request, self._src
         self.edit_crop.setPlaceholderText("检测中…")
 
         def work():
-            result = detect_crop(self._src)
-            self._bridge.cropDone.emit(result or "")
+            try:
+                result = detect_crop(path)
+            except Exception:
+                result = None
+            self._bridge.cropDone.emit(request, path, result or "")
         threading.Thread(target=work, daemon=True).start()
 
-    def _on_crop_done(self, result):
-        self.btn_detect.setEnabled(True)
+    def _on_crop_done(self, request, path, result):
+        if self._closed or request != self._load_request or path != self._src:
+            return
+        self._crop_pending = False
+        self._refresh()
         self.edit_crop.setPlaceholderText("w:h:x:y，可自动检测")
         if result:
             self.edit_crop.setText(result)
@@ -832,11 +855,11 @@ class ClipPage(QWidget):
         directory = QFileDialog.getExistingDirectory(self, "选择输出目录",
                                                     self._out_dir or "")
         if directory:
-            self._out_dir = directory
-            shown = directory if len(directory) <= 40 else "…" + directory[-39:]
-            self.dir_chip.setText(f"📁  输出到：{shown}")
+            set_page_out_dir(self, directory)
 
     def _export_segments(self):
+        if self._pending:
+            return
         if not self._src or not self._segments:
             self.win.toast("请先添加片段")
             return
@@ -851,7 +874,8 @@ class ClipPage(QWidget):
             preset = {"args": out, "ext": ext, "name": f"剪辑·{label}"}
             task_id = f"{self._src}#seg{i}"
             task = Task(self._src, preset, self._out_dir,
-                        duration=seg["end"] - seg["start"],
+                        duration=(seg["end"] - seg["start"]) /
+                        (transform["speed"] if mode == "precise" else 1.0),
                         base_name=f"{base}_片段{i + 1:02d}",
                         task_id=task_id, input_args=inp)
             seg["task_id"] = task_id
@@ -864,6 +888,8 @@ class ClipPage(QWidget):
         self._refresh()
 
     def _export_merge(self):
+        if self._pending:
+            return
         if not self._src or not self._segments:
             self.win.toast("请先添加片段")
             return
@@ -890,15 +916,20 @@ class ClipPage(QWidget):
         self._refresh()
 
     def _export_single_merge(self, span):
+        if self._pending:
+            return
+        mode = "lossless" if self.rb_lossless.isChecked() else "precise"
+        transform = self._transform()
         inp, out, ext, label = build_segment(
             self._src, span[0], span[1],
-            "lossless" if self.rb_lossless.isChecked() else "precise",
-            self._encode_id(), self._transform())
+            mode, self._encode_id(), transform)
         base = os.path.splitext(os.path.basename(self._src))[0]
         preset = {"args": out, "ext": ext, "name": f"剪辑·{label}"}
         task_id = f"{self._src}#merge"
         task = Task(self._src, preset, self._out_dir,
-                    duration=span[1] - span[0], base_name=f"{base}_合并",
+                    duration=(span[1] - span[0]) /
+                    (transform["speed"] if mode == "precise" else 1.0),
+                    base_name=f"{base}_合并",
                     task_id=task_id, input_args=inp)
         seg = self._segments[0]
         seg["task_id"] = task_id
@@ -952,7 +983,7 @@ class ClipPage(QWidget):
         self.btn_add_seg.setEnabled(loaded and not busy)
         self.btn_split.setEnabled(loaded and not busy)
         self.btn_clear_segs.setEnabled(has_segs and not busy)
-        self.btn_detect.setEnabled(loaded)
+        self.btn_detect.setEnabled(loaded and not busy and not self._crop_pending)
         self.btn_export.setEnabled(loaded and has_segs and not busy)
         self.btn_export.setText("导出中…" if busy else "导出全部片段")
         self.btn_merge.setEnabled(loaded and has_segs and not busy)
@@ -963,6 +994,8 @@ class ClipPage(QWidget):
         self.combo_encode.setEnabled(not busy)
 
     def shutdown(self):
+        self._closed = True
+        self._load_request += 1
         self.stop_preview()
 
     # ==================================================================

@@ -143,6 +143,7 @@ class FileRow(QFrame):
             "probing": "读取信息…",
             "ready": "就绪",
             "queued": "排队中",
+            "starting": "启动中…",
             "running": f"转换中 {percent:.0f}%",
             "done": f"完成 · {fmt_took(took_ms)}",
             "error": "失败",
@@ -153,11 +154,11 @@ class FileRow(QFrame):
         _repolish(self.chip)
         self.chip.setToolTip(error if status == "error" else "")
 
-        self.bar.setVisible(status == "running")
+        self.bar.setVisible(status in ("starting", "running"))
         self.bar.setValue(int(percent))
         self.speed.setText(speed if status == "running" else "")
 
-        self.btn_del.setVisible(status not in ("queued", "running"))
+        self.btn_del.setVisible(status not in ("queued", "starting", "running"))
         self.btn_open.setVisible(status == "done")
         if status == "done" and output_path:
             self._output = output_path

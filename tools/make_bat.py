@@ -9,12 +9,16 @@ cd /d "%~dp0"
 
 rem ---- 定位可用的 Python：真实试运行来筛选，避开 Microsoft Store 的占位 python.exe ----
 set "PYEXE="
+set "PYARGS="
 if exist "%USERPROFILE%\\anaconda3\\python.exe" set "PYEXE=%USERPROFILE%\\anaconda3\\python.exe"
 if not defined PYEXE (
     python -c "print(1)" >nul 2>nul && set "PYEXE=python"
 )
 if not defined PYEXE (
-    py -3 -c "print(1)" >nul 2>nul && set "PYEXE=py -3"
+    py -3 -c "print(1)" >nul 2>nul && (
+        set "PYEXE=py"
+        set "PYARGS=-3"
+    )
 )
 
 if not defined PYEXE (
@@ -27,10 +31,10 @@ if not defined PYEXE (
 echo [FFmpegUI] 使用 Python: %PYEXE%
 
 rem ---- 首次运行自动安装依赖 ----
-"%PYEXE%" -c "import PySide6" >nul 2>nul
+"%PYEXE%" %PYARGS% -c "import PySide6" >nul 2>nul
 if errorlevel 1 (
     echo 首次运行，正在安装依赖 PySide6，约 1-2 分钟，仅需一次...
-    "%PYEXE%" -m pip install -r requirements.txt
+    "%PYEXE%" %PYARGS% -m pip install -r requirements.txt
     if errorlevel 1 (
         echo [错误] 依赖安装失败，请检查网络后重试。
         pause
@@ -38,7 +42,7 @@ if errorlevel 1 (
     )
 )
 
-"%PYEXE%" -m app.main
+"%PYEXE%" %PYARGS% -m app.main
 if errorlevel 1 pause
 '''
 

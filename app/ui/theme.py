@@ -233,4 +233,9 @@ QScrollBar::handle:vertical { background: #232c48; border-radius: 4px; min-heigh
 QScrollBar::handle:vertical:hover { background: #33426f; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+QScrollBar:horizontal { background: transparent; height: 9px; margin: 2px; }
+QScrollBar::handle:horizontal { background: #232c48; border-radius: 4px; min-width: 30px; }
+QScrollBar::handle:horizontal:hover { background: #33426f; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }
 """

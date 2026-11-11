@@ -15,7 +15,7 @@ from app.core.presets import get_preset
 from app.core.probe import probe_file
 from app.core.runner import Task
 from app.core.utils import fmt_duration, fmt_fps
-from app.ui.widgets import apply_default_out_dir
+from app.ui.widgets import apply_default_out_dir, set_page_out_dir
 
 
 def _repolish(w):
@@ -46,7 +46,7 @@ class MergeRow(QFrame):
         self.name = QLabel(os.path.basename(path))
         self.name.setObjectName("FileName")
         self.name.setToolTip(path)
-        if info:
+        if info and info.get("video"):
             v, a = info.get("video"), info.get("audio")
             parts = [f"{v['codec'].upper()} · {v['w']}×{v['h']}"]
             fps = fmt_fps(v.get("fps"))
@@ -56,6 +56,8 @@ class MergeRow(QFrame):
             if not a:
                 parts.append("无音轨")
             self.meta = QLabel(" · ".join(parts))
+        elif info:
+            self.meta = QLabel("未发现视频流")
         else:
             self.meta = QLabel("正在读取媒体信息…")
         self.meta.setObjectName("FileMeta")
@@ -269,6 +271,8 @@ class MergePage(QWidget):
             self._bridge.probeDone.emit(path, None, str(exc))
 
     def _on_probe_done(self, path, info, error):
+        if not error and (not info or not info.get("video")):
+            info, error = None, "该文件没有视频流，无法用于视频拼接"
         for item in self._items:
             if item["path"] == path:
                 item["info"] = info
@@ -286,6 +290,9 @@ class MergePage(QWidget):
         for i, entry in enumerate(self._items):
             row = MergeRow(i, entry["path"], entry["info"],
                            self._move_up, self._move_down, self._remove)
+            if entry["error"]:
+                row.meta.setText(entry["error"])
+                row.setToolTip(entry["error"])
             if self._pending:
                 for b in (row.btn_up, row.btn_down, row.btn_del):
                     b.setEnabled(False)
@@ -352,7 +359,8 @@ class MergePage(QWidget):
             return
         paths = [it["path"] for it in self._items]
         infos = [it["info"] for it in self._items]
-        if not all(infos):
+        if any(it["error"] for it in self._items) or \
+                not all(info and info.get("video") for info in infos):
             return
         base = os.path.splitext(os.path.basename(paths[0]))[0]
         total = sum((i.get("duration") or 0) for i in infos)
@@ -453,13 +461,13 @@ class MergePage(QWidget):
         directory = QFileDialog.getExistingDirectory(self, "选择输出目录",
                                                     self._out_dir or "")
         if directory:
-            self._out_dir = directory
-            shown = directory if len(directory) <= 40 else "…" + directory[-39:]
-            self.dir_chip.setText(f"📁  输出到：{shown}")
+            set_page_out_dir(self, directory)
 
     def _refresh(self):
         busy = bool(self._pending)
-        ready = len(self._items) >= 2 and all(it["info"] for it in self._items)
+        ready = len(self._items) >= 2 and all(
+            not it["error"] and it["info"] and it["info"].get("video")
+            for it in self._items)
         self.btn_add.setEnabled(not busy)
         self.rb_fast.setEnabled(not busy and self._fast_ok)
         self.rb_re.setEnabled(not busy)
@@ -484,5 +492,6 @@ class MergePage(QWidget):
             event.acceptProposedAction()
             self.add_paths(paths)
 
-    def shutdown(self):
-        self._cleanup_list()
+    def shutdown(self, queue_stopped=True):
+        if queue_stopped:
+            self._cleanup_list()

@@ -26,6 +26,8 @@ def main():
         pass
 
     win = MainWindow()
+    if os.environ.get("FFGUI_CONVERT_MODE") == "advanced":
+        win.convert_mode.setCurrentIndex(1)
     win.show()
 
     # 供演示 / 自动化验证：命令行传入的文件按页面自动加载

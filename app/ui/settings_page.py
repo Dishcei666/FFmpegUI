@@ -205,11 +205,13 @@ class SettingsPage(QWidget):
         for key in self.edits:
             self._check(key)
         enc = settings.get("hw_encoder") or ""
+        self.cb_gpu.setEnabled(bool(enc))
         if enc:
             self.gpu_status.setText(
                 f"当前硬件编码器：<b>{gpu.LABELS.get(enc, enc)}</b>"
                 "（来自上次检测）")
-            self.cb_gpu.setEnabled(True)
+        else:
+            self.gpu_status.setText("尚未检测。检测需逐个试编码，约 5-15 秒。")
 
     # ------------------------------------------------------------------
     def _pick_path(self, key):
@@ -226,6 +228,7 @@ class SettingsPage(QWidget):
     def _save_path(self, key, value):
         settings.set(key, value.strip())
         self._check(key)
+        self.win._detect_ffmpeg()
         self.win.toast("已保存")
 
     def _check(self, key):
@@ -272,6 +275,7 @@ class SettingsPage(QWidget):
 
     def _save_outdir(self, value):
         settings.set("out_dir", value)
+        self.win.refresh_default_out_dirs()
         self.win.toast("已保存")
 
     # ------------------------------------------------------------------
@@ -290,11 +294,11 @@ class SettingsPage(QWidget):
 
     def _on_gpu_each(self, enc, ok):
         self._gpu_results[enc] = ok
-        mark = '<span style="color:#3ddc84;">✓</span>' if ok else \
-            '<span style="color:#6a7594;">✗</span>'
         self.gpu_status.setText(
             "检测中…  " + "  ".join(
-                f"{mark} {gpu.LABELS[e]}" for e, o in self._gpu_results.items()))
+                f'<span style="color:{"#3ddc84" if available else "#6a7594"};">'
+                f'{"✓" if available else "✗"}</span> {gpu.LABELS[encoder]}'
+                for encoder, available in self._gpu_results.items()))
 
     def _on_gpu_done(self, results):
         self.btn_detect.setEnabled(True)
@@ -307,6 +311,7 @@ class SettingsPage(QWidget):
             self.cb_gpu.setEnabled(True)
             self.win.toast(f"GPU 检测完成：{gpu.LABELS[best]} 可用")
         else:
+            settings.set("hw_encoder", "")
             self.gpu_status.setText(
                 "检测完成：未发现可用的硬件编码器（需要 NVIDIA / Intel 核显"
                 " / AMD 显卡及对应驱动），将使用 CPU 编码。")
@@ -318,4 +323,6 @@ class SettingsPage(QWidget):
     def _reset_all(self):
         settings.reset()
         self._load_values()
+        self.win.refresh_default_out_dirs()
+        self.win._detect_ffmpeg()
         self.win.toast("已恢复默认设置")

@@ -6,7 +6,7 @@ import threading
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QButtonGroup, QFileDialog, QFrame, QGridLayout,
+from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFileDialog, QFrame, QGridLayout,
                                QHBoxLayout, QLabel, QMainWindow,
                                QPlainTextEdit, QPushButton, QScrollArea,
                                QStackedWidget, QVBoxLayout, QWidget)
@@ -19,12 +19,14 @@ from app.core.queue import TaskQueue
 from app.core.runner import Task
 from app.core.utils import fmt_size
 from app.ui.audio_page import AudioPage
+from app.ui.advanced_conversion import AdvancedConversionPanel
 from app.ui.clip_page import ClipPage
 from app.ui.file_row import FileRow
 from app.ui.merge_page import MergePage
 from app.ui.settings_page import SettingsPage
 from app.ui.watermark_page import WatermarkPage
-from app.ui.widgets import DropZone, PresetCard, apply_default_out_dir
+from app.ui.widgets import (DropZone, PresetCard, apply_default_out_dir,
+                            set_page_out_dir)
 
 VIDEO_EXT = {"mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "ts",
              "mpg", "mpeg", "3gp", "vob", "m2ts", "mts", "rmvb", "rm", "ogv"}
@@ -34,7 +36,7 @@ ALL_EXT = VIDEO_EXT | AUDIO_EXT
 
 # 侧栏"待开发"模块：名称 -> 计划版本
 PLANNED_MODULES = [
-    ("录屏 / 下载", "0.6"),
+    ("录屏 / 下载", "0.7"),
 ]
 
 # 已上线页面：导航名 -> (图标, 页面索引)
@@ -104,7 +106,7 @@ class MainWindow(QMainWindow):
         title_col.setSpacing(2)
         title_col.addWidget(QLabel("格式转换"))
         title_col.itemAt(0).widget().setObjectName("PageTitle")
-        sub = QLabel("拖入文件，选择输出预设，一键完成转换")
+        sub = QLabel("常用预设一键转换，或自定义格式、编码与画质")
         sub.setObjectName("PageSub")
         title_col.addWidget(sub)
         head.addLayout(title_col)
@@ -132,9 +134,18 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.drop)
 
         # 预设卡片
-        sec1 = QLabel("输出预设")
+        mode_row = QHBoxLayout()
+        sec1 = QLabel("转换方式")
         sec1.setObjectName("SectionLabel")
-        main_layout.addWidget(sec1)
+        mode_row.addWidget(sec1)
+        self.convert_mode = QComboBox()
+        self.convert_mode.addItem("常用预设", "presets")
+        self.convert_mode.addItem("高级自定义", "advanced")
+        mode_row.addWidget(self.convert_mode)
+        mode_row.addStretch(1)
+        main_layout.addLayout(mode_row)
+        self.convert_options = QStackedWidget()
+        self.convert_options.setFixedHeight(146)
         grid_host = QWidget()
         self.preset_grid = QGridLayout(grid_host)
         self.preset_grid.setContentsMargins(0, 0, 0, 0)
@@ -150,7 +161,10 @@ class MainWindow(QMainWindow):
         self.preset_grid.setColumnStretch(2, 1)
         self.preset_grid.setColumnStretch(3, 1)
         self.preset_group.buttons()[0].setChecked(True)
-        main_layout.addWidget(grid_host)
+        self.convert_options.addWidget(grid_host)
+        self.advanced_panel = AdvancedConversionPanel()
+        self.convert_options.addWidget(self.advanced_panel)
+        main_layout.addWidget(self.convert_options)
 
         # 文件列表
         sec2 = QLabel("文件列表")
@@ -268,7 +282,7 @@ class MainWindow(QMainWindow):
         self.foot_status = QLabel("正在检测 ffmpeg…")
         self.foot_status.setObjectName("FootStatus")
         self.foot_status.setWordWrap(True)
-        self.foot_ver = QLabel("v0.5 · 设置与硬件加速已上线")
+        self.foot_ver = QLabel("v0.6 · 高级格式转换已上线")
         self.foot_ver.setObjectName("FootVer")
         foot_layout.addWidget(self.foot_status)
         foot_layout.addWidget(self.foot_ver)
@@ -325,6 +339,8 @@ class MainWindow(QMainWindow):
         self.clear_btn.clicked.connect(self._clear_finished)
         self.log_btn.toggled.connect(self.log_panel.setVisible)
         self.preset_group.buttonToggled.connect(self._on_preset_toggled)
+        self.convert_mode.currentIndexChanged.connect(self._on_convert_mode_changed)
+        self.advanced_panel.changed.connect(self._refresh)
 
         self._bridge.events.connect(self._on_queue_event)
         self._bridge.logs.connect(self._on_task_log)
@@ -337,8 +353,9 @@ class MainWindow(QMainWindow):
     def add_paths(self, paths):
         added, dup, skipped = [], 0, 0
         for path in paths:
-            ext = os.path.splitext(path)[1][1:].lower()
-            if ext not in ALL_EXT:
+            # 文件内容由 ffprobe 判断，扩展名列表仅用于文件选择器提示。
+            # 允许 .mxf/.m4v/无扩展名等本机 FFmpeg 实际能读取的输入。
+            if not os.path.isfile(path):
                 skipped += 1
                 continue
             if path in self._files:
@@ -354,7 +371,7 @@ class MainWindow(QMainWindow):
         if dup:
             self.toast(f"{dup} 个文件已在列表中，已跳过")
         if skipped:
-            self.toast(f"已跳过 {skipped} 个不支持的文件")
+            self.toast(f"已跳过 {skipped} 个目录或不存在的文件")
         if added:
             self.drop.set_compact(True)
             for path in added:                   # 并行探测，互不排队
@@ -378,6 +395,11 @@ class MainWindow(QMainWindow):
             item["row"].meta.setText("无法读取该文件")
             item["row"].set_state("error", error=error)
         else:
+            if not info.get("video") and not info.get("audio"):
+                item["status"] = "error"
+                item["row"].set_state("error", error="文件不含可转换的视频或音频流")
+                self._refresh()
+                return
             item["info"] = info
             item["status"] = "ready"
             item["row"].set_info(info)
@@ -388,7 +410,7 @@ class MainWindow(QMainWindow):
         exts = " ".join(f"*.{e}" for e in sorted(ALL_EXT))
         paths, _ = QFileDialog.getOpenFileNames(
             self, "选择媒体文件", "",
-            f"所有支持的媒体文件 ({exts});;所有文件 (*)")
+            f"所有文件（自动探测） (*);;常见媒体文件 ({exts})")
         if paths:
             self.add_paths(paths)
 
@@ -406,17 +428,30 @@ class MainWindow(QMainWindow):
             self.toast("请先添加可转换的文件")
             return
 
+        advanced = self.convert_mode.currentData() == "advanced"
+        if advanced and not self.advanced_panel.is_ready():
+            self.toast("请先检测 FFmpeg 能力；硬件编码需通过试编码")
+            self.advanced_panel.refresh_capabilities()
+            return
+        # 先校验整批输入，再改变任何一行状态，避免半批入队。
         tasks = []
-        for path, item in convertible:
-            duration = (item["info"] or {}).get("duration", 0)
-            tasks.append(Task(path, self._preset, self._out_dir,
-                              duration=duration))
+        try:
+            for path, item in convertible:
+                preset = (self.advanced_panel.build_preset(item["info"])
+                          if advanced else self._preset)
+                duration = item["info"].get("duration", 0)
+                tasks.append(Task(path, preset, self._out_dir, duration=duration))
+        except (ValueError, RuntimeError) as exc:
+            self.toast(f"{os.path.basename(path)}：{exc}", ms=6000)
+            self._log_line(f"转换参数校验失败 [{os.path.basename(path)}]：{exc}")
+            return
+        for _, item in convertible:
             item["status"] = "queued"
             item["row"].set_state("queued")
 
         self._busy = True
         name = os.path.basename(convertible[0][0])
-        self._log_line(f"=== 开始 {len(tasks)} 个任务 · 预设：{self._preset['name']}"
+        self._log_line(f"=== 开始 {len(tasks)} 个任务 · {tasks[0].preset['name']}"
                        f" · 首个文件：{name}")
         self.queue.enqueue(tasks)
         self._refresh()
@@ -462,19 +497,19 @@ class MainWindow(QMainWindow):
         item = self._files.get(path)
         if item is None:
             return
-        if item["status"] in ("queued", "running"):
+        if item["status"] in ("queued", "starting", "running"):
             self.toast("任务进行中，无法移除（可先取消）")
             return
         item["row"].setParent(None)
         item["row"].deleteLater()
         del self._files[path]
         if not self._files:
-            self.drop.set_compact(False)
+            self.drop.set_compact(self.convert_mode.currentData() == "advanced")
         self._refresh()
 
     def _clear_finished(self):
         for path in [p for p, it in self._files.items()
-                     if it["status"] not in ("queued", "running")]:
+                     if it["status"] not in ("queued", "starting", "running")]:
             self._remove_file(path)
 
     # ==================================================================
@@ -485,16 +520,27 @@ class MainWindow(QMainWindow):
             self._preset = btn.preset
             self._refresh()
 
+    def _on_convert_mode_changed(self, index):
+        self.convert_options.setCurrentIndex(index)
+        # QStackedWidget 默认以最高页决定尺寸，切换时单独给当前模式留空间。
+        self.convert_options.setFixedHeight(260 if index else 146)
+        if index:
+            self.drop.set_compact(True)
+            self.advanced_panel.refresh_capabilities()
+        else:
+            self.drop.set_compact(bool(self._files))
+        self._refresh()
+
     def _pick_dir(self):
         directory = QFileDialog.getExistingDirectory(self, "选择输出目录",
                                                      self._out_dir or "")
         if directory:
-            self._out_dir = directory
-            home = os.path.expanduser("~")
-            shown = directory if len(directory) <= 44 else "…" + directory[-43:]
-            if shown.startswith(home):
-                shown = "~" + shown[len(home):]
-            self.dir_chip.setText(f"📁  输出到：{shown}")
+            set_page_out_dir(self, directory)
+
+    def refresh_default_out_dirs(self):
+        for page in (self, self.clip_page, self.audio_page, self.merge_page,
+                     self.watermark_page):
+            apply_default_out_dir(page)
 
     def _open_in_explorer(self, path):
         if not path:
@@ -505,6 +551,8 @@ class MainWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(path)))
 
     def _detect_ffmpeg(self):
+        if hasattr(self, "advanced_panel") and self.convert_mode.currentData() == "advanced":
+            self.advanced_panel.refresh_capabilities()
         def work():
             try:
                 proc = subprocess.run([settings.ffmpeg(), "-version"],
@@ -512,7 +560,7 @@ class MainWindow(QMainWindow):
                                       timeout=5, creationflags=_NO_WINDOW)
                 first = proc.stdout.decode("utf-8", "ignore").splitlines()
                 ver = first[0].split()[2] if first and len(first[0].split()) > 2 else "?"
-                self._bridge.ffmpegInfo.emit(True, ver)
+                self._bridge.ffmpegInfo.emit(proc.returncode == 0, ver)
             except Exception:                     # noqa: BLE001
                 self._bridge.ffmpegInfo.emit(False, "")
         threading.Thread(target=work, daemon=True).start()
@@ -549,10 +597,16 @@ class MainWindow(QMainWindow):
         convertible = any(it["info"] and it["status"] in
                           ("ready", "cancelled", "error")
                           for it in self._files.values())
-        self.start_btn.setEnabled(not self._busy and convertible)
+        advanced = self.convert_mode.currentData() == "advanced"
+        options_ready = not advanced or self.advanced_panel.is_ready()
+        self.start_btn.setEnabled(not self._busy and convertible and options_ready)
         self.start_btn.setText("转换中…" if self._busy else "开始转换")
         self.cancel_btn.setVisible(self._busy)
         self.dir_chip.setEnabled(not self._busy)
+        self.convert_mode.setEnabled(not self._busy)
+        for button in self.preset_group.buttons():
+            button.setEnabled(not self._busy)
+        self.advanced_panel.set_busy(self._busy)
 
     def show_page(self, name):
         """切换页面：'convert' / 'clip' / 'audio' / 'merge' / 'wm' / 'settings'。"""
@@ -590,9 +644,12 @@ class MainWindow(QMainWindow):
             self.add_paths(paths)
 
     def closeEvent(self, event):
+        self.advanced_panel.shutdown()
+        queue_stopped = self.queue.shutdown(timeout=5)
         if hasattr(self, "clip_page"):
             self.clip_page.shutdown()
         if hasattr(self, "merge_page"):
-            self.merge_page.shutdown()
-        self.queue.cancel_all()
+            self.merge_page.shutdown(queue_stopped=queue_stopped)
+        if hasattr(self, "watermark_page"):
+            self.watermark_page.shutdown(queue_stopped=queue_stopped)
         super().closeEvent(event)

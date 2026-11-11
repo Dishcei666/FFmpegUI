@@ -20,7 +20,7 @@ from app.core.utils import fmt_size
 from app.core.watermark import SUBTITLE_STYLES, build_image_watermark, \
     build_subtitle, build_text_watermark
 from app.core.whisper import MODELS, download_model, is_downloaded, transcribe
-from app.ui.widgets import apply_default_out_dir
+from app.ui.widgets import apply_default_out_dir, set_page_out_dir
 
 SWATCH_COLORS = ["#FFFFFF", "#000000", "#FF4D4D", "#FFD21F", "#4D9FFF",
                  "#3DDC84"]
@@ -32,7 +32,7 @@ def _repolish(w):
 
 
 class _Bridge(QObject):
-    fileProbed = Signal(bool, object, str)
+    fileProbed = Signal(int, str, bool, object, str)
     aiProgress = Signal(float)
     aiDone = Signal(bool, str)         # (ok, srt路径或错误)
     aiLog = Signal(str)
@@ -85,12 +85,18 @@ class WatermarkPage(QWidget):
         self.win = window
         self._src = None
         self._info = None
+        self._load_request = 0
+        self._closed = False
         self._out_dir = None
         self._pending = set()
         self._cleanup = None              # 导出结束后的临时文件清理
         self._color = "#FFFFFF"
         self._ai_busy = False
         self._dl_busy = False
+        self._ai_cancel = threading.Event()
+        self._dl_cancel = threading.Event()
+        self._ai_thread = None
+        self._dl_thread = None
         self._bridge = _Bridge()
         self.setAcceptDrops(True)
         self._build_ui()
@@ -496,22 +502,29 @@ class WatermarkPage(QWidget):
             self.load_file(path)
 
     def load_file(self, path):
+        if self._pending or self._ai_busy or self._closed:
+            self.win.toast("请先等待或取消当前处理，再切换文件")
+            return
+        self._load_request += 1
+        request = self._load_request
         self._src = path
         self._info = None
         self.file_name.setText(os.path.basename(path))
         self.file_meta.setText("正在读取媒体信息…")
-        threading.Thread(target=self._probe_one, args=(path,),
+        threading.Thread(target=self._probe_one, args=(request, path),
                          daemon=True).start()
         self._refresh()
 
-    def _probe_one(self, path):
+    def _probe_one(self, request, path):
         try:
             info = probe_file(path)
-            self._bridge.fileProbed.emit(True, info, "")
+            self._bridge.fileProbed.emit(request, path, True, info, "")
         except Exception as exc:              # noqa: BLE001
-            self._bridge.fileProbed.emit(False, None, str(exc))
+            self._bridge.fileProbed.emit(request, path, False, None, str(exc))
 
-    def _on_file_probed(self, ok, info, error):
+    def _on_file_probed(self, request, path, ok, info, error):
+        if self._closed or request != self._load_request or path != self._src:
+            return
         if not ok:
             self._src = None
             self.file_meta.setText("无法读取该文件")
@@ -541,10 +554,11 @@ class WatermarkPage(QWidget):
             self.btn_download.setVisible(not self._dl_busy)
 
     def _download_model(self):
-        if self._dl_busy:
+        if self._dl_busy or self._ai_busy or self._closed:
             return
         key = self.combo_model.currentData() or "base"
         self._dl_busy = True
+        self._dl_cancel.clear()
         self.btn_download.setEnabled(False)
         self.model_status.setText("下载中…")
         self.ai_bar.setRange(0, 100)
@@ -558,26 +572,34 @@ class WatermarkPage(QWidget):
                     self._bridge.dlProgress.emit(
                         pct, f"下载中 {pct:.0f}% · {fmt_size(done)}"
                              f"{' / ' + fmt_size(total) if total else ''}")
-                download_model(key, cb)
+                download_model(key, cb, cancel_event=self._dl_cancel)
                 self._bridge.dlDone.emit(True, "模型下载完成")
             except Exception as exc:          # noqa: BLE001
                 self._bridge.dlDone.emit(False, f"下载失败：{exc}")
-        threading.Thread(target=work, daemon=True).start()
+        self._dl_thread = threading.Thread(target=work, daemon=True)
+        self._dl_thread.start()
+        self._refresh()
 
     def _on_dl_progress(self, pct, text):
+        if self._closed:
+            return
         self.ai_bar.setValue(int(pct))
         self.model_status.setText(text)
 
     def _on_dl_done(self, ok, text):
+        if self._closed:
+            return
         self._dl_busy = False
         self.btn_download.setEnabled(True)
-        self.win.toast(text)
-        if ok:
+        self.win.toast("已取消模型下载" if self._dl_cancel.is_set() else text)
+        if ok or self._dl_cancel.is_set():
             self.ai_bar.hide()
         self._update_model_status()
+        self._refresh()
 
     def _generate_subtitles(self):
-        if self._ai_busy or not self._src:
+        if (self._ai_busy or self._dl_busy or self._pending
+                or self._closed or not self._src):
             if not self._src:
                 self.win.toast("请先选择视频文件")
             return
@@ -598,6 +620,8 @@ class WatermarkPage(QWidget):
             srt = os.path.join(out_dir, f"{base} ({i}).srt")
 
         self._ai_busy = True
+        self._ai_cancel.clear()
+        source = self._src
         self.btn_gen.setEnabled(False)
         self.ai_bar.setRange(0, 100)
         self.ai_bar.setValue(0)
@@ -607,19 +631,26 @@ class WatermarkPage(QWidget):
 
         def work():
             try:
-                transcribe(self._src, key, lang, srt, duration=duration,
+                transcribe(source, key, lang, srt, duration=duration,
                            on_progress=lambda p: self._bridge.aiProgress.emit(p),
-                           on_log=lambda l: self._bridge.aiLog.emit(l))
+                           on_log=lambda l: self._bridge.aiLog.emit(l),
+                           cancel_event=self._ai_cancel)
                 self._bridge.aiDone.emit(True, srt)
             except Exception as exc:          # noqa: BLE001
                 self._bridge.aiDone.emit(False, str(exc))
-        threading.Thread(target=work, daemon=True).start()
+        self._ai_thread = threading.Thread(target=work, daemon=True)
+        self._ai_thread.start()
+        self._refresh()
 
     def _on_ai_progress(self, pct):
+        if self._closed:
+            return
         self.ai_bar.setValue(int(pct))
         self.ai_status.setText(f"识别中 {pct:.0f}%")
 
     def _on_ai_done(self, ok, result):
+        if self._closed:
+            return
         self._ai_busy = False
         self.btn_gen.setEnabled(True)
         if ok:
@@ -627,10 +658,15 @@ class WatermarkPage(QWidget):
             self.ai_status.setText(f"字幕已生成：{os.path.basename(result)}")
             self.edit_sub.setText(result)
             self.win.toast("AI 字幕生成完成，可直接烧录")
+        elif self._ai_cancel.is_set():
+            self.ai_bar.hide()
+            self.ai_status.setText("识别已取消")
+            self.win.toast("已取消 AI 字幕识别")
         else:
             self.ai_bar.hide()
             self.ai_status.setText(f"识别失败：{result[-120:]}")
             self.win.toast("AI 识别失败，详情见状态文字")
+        self._refresh()
 
     # ==================================================================
     # 导出
@@ -639,7 +675,8 @@ class WatermarkPage(QWidget):
         return self.combo_encode_main.currentData() or "x264-hq"
 
     def start(self):
-        if self._pending or not self._src or not self._info:
+        if (self._pending or self._ai_busy or self._closed
+                or not self._src or not self._info):
             return
         base = os.path.splitext(os.path.basename(self._src))[0]
         tid = f"{self._src}#wm"
@@ -697,6 +734,12 @@ class WatermarkPage(QWidget):
         self._refresh()
 
     def _cancel(self):
+        if self._ai_busy:
+            self._ai_cancel.set()
+            self.ai_status.setText("正在取消识别…")
+        if self._dl_busy:
+            self._dl_cancel.set()
+            self.model_status.setText("正在取消下载…")
         for tid in list(self._pending):
             self.win.queue.cancel(tid)
 
@@ -777,25 +820,41 @@ class WatermarkPage(QWidget):
         directory = QFileDialog.getExistingDirectory(self, "选择输出目录",
                                                     self._out_dir or "")
         if directory:
-            self._out_dir = directory
-            shown = directory if len(directory) <= 40 else "…" + directory[-39:]
-            self.dir_chip.setText(f"📁  {shown}")
-            self.dir_chip_main.setText(f"📁  输出到：{shown}")
+            set_page_out_dir(self, directory)
 
     def _refresh(self):
-        busy = bool(self._pending)
+        busy = bool(self._pending) or self._ai_busy
         loaded = bool(self._src and self._info)
         self.btn_start.setEnabled(loaded and not busy)
         self.btn_start.setText("处理中…" if busy else "开始处理")
-        self.btn_cancel.setVisible(busy)
+        self.btn_cancel.setVisible(busy or self._dl_busy)
         self.btn_open_file.setEnabled(not busy)
-        self.btn_gen.setEnabled(loaded and not self._ai_busy and not busy)
-        self.btn_download.setEnabled(not self._dl_busy)
+        self.btn_gen.setEnabled(loaded and bool(self._info.get("audio"))
+                                and not busy and not self._dl_busy)
+        self.btn_download.setEnabled(not self._dl_busy and not self._ai_busy)
+        self.combo_model.setEnabled(not self._dl_busy and not self._ai_busy)
+        self.combo_lang.setEnabled(not self._ai_busy)
         self.dir_chip.setEnabled(not busy)
         self.dir_chip_main.setEnabled(not busy)
         self.bar.setVisible(busy or self.bar.value() > 0)
 
     # ==================================================================
+    def shutdown(self, queue_stopped=True):
+        self._closed = True
+        self._load_request += 1
+        self._ai_cancel.set()
+        self._dl_cancel.set()
+        for worker in (self._ai_thread, self._dl_thread):
+            if worker is not None and worker.is_alive():
+                worker.join(timeout=2)
+        if queue_stopped and self._cleanup:
+            try:
+                self._cleanup()
+            except OSError:
+                pass
+            finally:
+                self._cleanup = None
+
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()

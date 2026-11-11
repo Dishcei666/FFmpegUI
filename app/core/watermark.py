@@ -8,6 +8,7 @@ import os
 import tempfile
 
 from .presets import get_preset
+from .filters import join_filters, split_video_filters
 from .utils import escape_filter_path
 
 # 九宫格位置 -> 表达式（drawtext 用小写 w/h，overlay 用大写 W/H 为主画面）
@@ -50,6 +51,7 @@ def build_text_watermark(text, font_size, color_hex, opacity, pos_x, pos_y,
     文本写入临时文件由 textfile 引用，规避 drawtext 的转义地狱。
     """
     preset = get_preset(encode_preset_id) or get_preset("x264-hq")
+    encode_args, preset_vf = split_video_filters(preset["args"])
     font = find_font()
     m = max(0, int(margin))
     color = (color_hex or "#FFFFFF").lstrip("#")
@@ -66,12 +68,12 @@ def build_text_watermark(text, font_size, color_hex, opacity, pos_x, pos_y,
         head += f"fontfile={escape_filter_path(font)}:"
         # 无系统字体时仍尝试渲染（中文可能变方块，但不至于失败）
     vf = (f"{head}textfile={escape_filter_path(txt_path)}"
-          f":fontsize={max(8, int(font_size))}"
+          f":expansion=none:fontsize={max(8, int(font_size))}"
           f":fontcolor=0x{color}@{alpha:.2f}"
           f":borderw=2:bordercolor=black@0.55"
           f":x={X_TEXT[pos_x].format(m=m)}"
           f":y={Y_TEXT[pos_y].format(m=m)}")
-    out = ["-vf", vf, *preset["args"]]
+    out = ["-vf", join_filters(preset_vf, vf), *encode_args]
 
     def cleanup():
         try:
@@ -89,19 +91,22 @@ def build_image_watermark(image_path, scale_pct, opacity, pos_x, pos_y,
     input_args 已含视频与图片两个 -i，配合 Task(custom_input=True) 使用。
     """
     preset = get_preset(encode_preset_id) or get_preset("x264-hq")
+    encode_args, preset_vf = split_video_filters(preset["args"])
     m = max(0, int(margin))
     alpha = max(0.05, min(1.0, opacity / 100.0))
     scale = max(2, min(100, scale_pct)) / 100.0
 
+    # scale2ref 的 iw 是参考视频宽度；先缩视频，再按最终画面宽度缩水印。
     graph = (
-        f"[1:v]scale=iw*{scale:.3f}:-1:flags=lanczos,"
-        f"colorchannelmixer=aa={alpha:.2f}[wm];"
-        f"[0:v][wm]overlay=x={X_OVERLAY[pos_x].format(m=m)}:"
+        f"[0:v]{preset_vf or 'null'}[base];"
+        f"[1:v][base]scale2ref=w=iw*{scale:.3f}:h=ow/mdar:flags=lanczos[scaled][video];"
+        f"[scaled]format=rgba,colorchannelmixer=aa={alpha:.2f}[wm];"
+        f"[video][wm]overlay=x={X_OVERLAY[pos_x].format(m=m)}:"
         f"y={Y_OVERLAY[pos_y].format(m=m)}:format=auto[v]"
     )
     inp = ["-i", "{VIDEO}", "-i", image_path]      # {VIDEO} 由调用方替换为源
     out = ["-filter_complex", graph, "-map", "[v]", "-map", "0:a?",
-           *preset["args"]]
+           *encode_args]
     return inp, out, "mp4", preset["name"]
 
 
@@ -112,6 +117,7 @@ def build_subtitle(sub_path, style_index, encode_preset_id, video_path=None):
     ASS 保留原样式（style_index=0 时 force_style 为空）。
     """
     preset = get_preset(encode_preset_id) or get_preset("x264-hq")
+    encode_args, preset_vf = split_video_filters(preset["args"])
     style = SUBTITLE_STYLES[max(0, min(len(SUBTITLE_STYLES) - 1,
                                        style_index))][1]
 
@@ -123,7 +129,7 @@ def build_subtitle(sub_path, style_index, encode_preset_id, video_path=None):
     vf = f"subtitles=filename={escape_filter_path(tmp_sub)}"
     if style:
         vf += f":force_style='{style}'"
-    out = ["-vf", vf, *preset["args"]]
+    out = ["-vf", join_filters(preset_vf, vf), *encode_args]
 
     def cleanup():
         try:

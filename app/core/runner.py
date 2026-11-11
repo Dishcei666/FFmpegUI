@@ -11,16 +11,20 @@ import os
 import subprocess
 import threading
 import time
+import uuid
+import logging
 
 from . import settings
 
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+_LOG = logging.getLogger(__name__)
 
 
 def _final_args(task):
     """按设置应用硬件编码替换（含 libx264 的参数才替换）。"""
     args = list(task.preset["args"])
-    if settings.get("prefer_gpu") and settings.get("hw_encoder"):
+    if (task.preset.get("allow_hw_override", True)
+            and settings.get("prefer_gpu") and settings.get("hw_encoder")):
         from . import gpu
         args = gpu.apply_hw_args(args, settings.get("hw_encoder"))
     return args
@@ -56,7 +60,7 @@ class Task:
         self.error = ""
         self.output_size = 0
         self.took_ms = 0
-        self.cancel_event = None                  # 由队列注入
+        self.cancel_event = threading.Event()     # 入队前即可取消，启动时不重置
         self._proc = None
         self._last_emit = 0.0
 
@@ -75,12 +79,7 @@ def _unique_final(out_dir, input_path, ext, base_name=None):
 def _plan_output(out_dir, input_path, ext, base_name=None):
     base = base_name or os.path.splitext(os.path.basename(input_path))[0]
     final = _unique_final(out_dir, input_path, ext, base_name=base)
-    temp = os.path.join(out_dir, f"{base}.ffgui-tmp.{ext}")
-    if os.path.exists(temp):
-        try:
-            os.remove(temp)
-        except OSError:
-            pass
+    temp = os.path.join(out_dir, f"{base}.ffgui-tmp.{uuid.uuid4().hex}.{ext}")
     return final, temp
 
 
@@ -93,98 +92,172 @@ def _safe_remove(path):
 
 
 def run_task(task, on_progress=None, on_log=None):
-    """阻塞执行一个任务（应在后台线程调用），返回更新后的 task。"""
-    if task.custom_input:
-        input_part = task.input_args
-    else:
-        input_part = [*task.input_args, "-i", task.input_path]
-    args = [settings.ffmpeg(), "-hide_banner", "-nostdin", "-y",
-            "-progress", "pipe:1", "-nostats",
-            *input_part, *_final_args(task), task.temp_path]
-    task.status = "running"
-    task._started_at = time.time()
-    _emit(task, on_progress, force=True)
-
-    try:
-        task._proc = subprocess.Popen(
-            args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            creationflags=_NO_WINDOW)
-    except FileNotFoundError:
-        task.status = "error"
-        task.error = "未找到 ffmpeg，请确认已安装并加入 PATH"
-        return task
-
+    """阻塞执行一个任务，所有退出路径均清理资源并上报终态。"""
+    started = time.monotonic()
     err_tail = []
+    readers = []
 
     def drain(stream, sink):
-        for raw in iter(stream.readline, b""):
-            line = raw.decode("utf-8", "ignore").strip()
-            if line:
-                sink(line)
+        try:
+            for raw in iter(stream.readline, b""):
+                line = raw.decode("utf-8", "ignore").strip()
+                if line:
+                    sink(line)
+        except (OSError, ValueError):
+            pass                              # 退出清理期间管道可能已关闭
 
     def on_err_line(line):
         err_tail.append(line)
         if len(err_tail) > 60:
             err_tail.pop(0)
         if on_log:
-            on_log(line)
+            _call(on_log, line)
 
-    t_out = threading.Thread(target=drain,
-                             args=(task._proc.stdout,
-                                   lambda l: _on_progress_line(task, l, on_progress)),
-                             daemon=True)
-    t_err = threading.Thread(target=drain,
-                             args=(task._proc.stderr, on_err_line),
-                             daemon=True)
-    t_out.start()
-    t_err.start()
-    code = task._proc.wait()
-    t_out.join(timeout=2)
-    t_err.join(timeout=2)
-
-    if task.cancel_event is not None and task.cancel_event.is_set():
-        _safe_remove(task.temp_path)
-        task.status = "cancelled"
-    elif code == 0:
+    try:
+        if _cancelled(task):
+            task.status = "cancelled"
+            return task
+        input_part = (task.input_args if task.custom_input else
+                      [*task.input_args, "-i", task.input_path])
+        args = [settings.ffmpeg(), "-hide_banner", "-nostdin", "-y",
+                "-progress", "pipe:1", "-nostats",
+                *input_part, *_final_args(task), task.temp_path]
+        task.status = "running"
+        _emit(task, on_progress, force=True)
+        if _cancelled(task):
+            task.status = "cancelled"
+            return task
         try:
-            final = task.output_path
-            if os.path.exists(final):
-                final = _unique_final(task.out_dir, task.input_path,
-                                      task.preset["ext"],
-                                      base_name=task.base_name)
-            os.replace(task.temp_path, final)
-            task.output_path = final
-            task.output_size = os.path.getsize(final)
-            task.status = "done"
-            task.percent = 100.0
-        except OSError as exc:
-            _safe_remove(task.temp_path)
+            task._proc = subprocess.Popen(
+                args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                creationflags=_NO_WINDOW)
+        except FileNotFoundError:
             task.status = "error"
-            task.error = f"保存输出文件失败：{exc}"
-    else:
-        _safe_remove(task.temp_path)
-        task.status = "error"
-        task.error = "\n".join(err_tail[-6:]) or f"ffmpeg 异常退出（代码 {code}）"
-
-    task.took_ms = int((time.time() - task._started_at) * 1000)
-    _emit(task, on_progress, force=True)
+            task.error = "未找到 ffmpeg，请确认已安装并加入 PATH 或在设置中指定路径"
+            return task
+        # 取消可能发生在 Popen 内部、进程对象赋值之前。
+        if _cancelled(task):
+            _terminate(task._proc)
+        readers = [
+            threading.Thread(target=drain, args=(task._proc.stdout,
+                lambda line: _on_progress_line(task, line, on_progress)), daemon=True),
+            threading.Thread(target=drain, args=(task._proc.stderr, on_err_line), daemon=True),
+        ]
+        for reader in readers:
+            reader.start()
+        code = task._proc.wait()
+        for reader in readers:
+            reader.join(timeout=2)
+        if _cancelled(task):
+            task.status = "cancelled"
+        elif code == 0:
+            try:
+                task.output_path = _publish_output(task)
+                task.output_size = os.path.getsize(task.output_path)
+                task.status = "done"
+                task.percent = 100.0
+            except OSError as exc:
+                task.status = "error"
+                task.error = f"保存输出文件失败：{exc}"
+        else:
+            task.status = "error"
+            task.error = "\n".join(err_tail[-6:]) or f"ffmpeg 异常退出（代码 {code}）"
+    except Exception as exc:
+        task.status = "cancelled" if _cancelled(task) else "error"
+        task.error = "" if task.status == "cancelled" else f"任务执行失败：{exc}"
+    finally:
+        try:
+            _cleanup_process(task._proc, readers)
+        finally:
+            task._proc = None
+            if task.status != "done":
+                _safe_remove(task.temp_path)
+            task.took_ms = int((time.monotonic() - started) * 1000)
+            _emit(task, on_progress, force=True)
     return task
 
 
-def cancel_task(task):
-    """请求取消：排队中的任务由队列直接置为 cancelled，运行中的杀进程。"""
-    if task.cancel_event:
-        task.cancel_event.set()
-    proc = task._proc
-    if proc is not None and proc.poll() is None:
+def _cleanup_process(proc, readers):
+    if proc is None:
+        return
+    try:
+        try:
+            running = proc.poll() is None
+        except OSError:
+            running = True
+        if running:
+            _terminate(proc)
+            try:
+                proc.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                except (OSError, subprocess.TimeoutExpired):
+                    _LOG.exception("回收 FFmpeg 进程失败")
+    finally:
+        for reader in readers:
+            if reader.ident is not None:
+                reader.join(timeout=2)
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    _LOG.exception("关闭 FFmpeg 管道失败")
+
+
+def _publish_output(task):
+    """原子发布完整输出，不覆盖同时完成的任务或外部新建文件。"""
+    while True:
+        final = _unique_final(task.out_dir, task.input_path, task.preset["ext"],
+                              base_name=task.base_name)
         try:
             if os.name == "nt":
-                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                               capture_output=True, creationflags=_NO_WINDOW)
+                os.rename(task.temp_path, final)  # Windows rename 不覆盖已有文件
             else:
-                proc.kill()
+                os.link(task.temp_path, final)    # POSIX rename 会覆盖，改用排他链接
+                _safe_remove(task.temp_path)
+            return final
+        except FileExistsError:
+            continue
+
+
+def _cancelled(task):
+    return task.cancel_event is not None and task.cancel_event.is_set()
+
+
+def _terminate(proc):
+    try:
+        if proc.poll() is not None:
+            return
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                           capture_output=True, creationflags=_NO_WINDOW, timeout=5)
+        if proc.poll() is None:
+            proc.kill()
+    except (OSError, subprocess.TimeoutExpired):
+        try:
+            proc.kill()
         except OSError:
             pass
+
+
+def cancel_task(task):
+    """请求取消，启动之前的请求也会被 run_task 保留。"""
+    if task.cancel_event is not None:
+        task.cancel_event.set()
+    proc = task._proc
+    if proc is not None:
+        _terminate(proc)
+
+
+def _call(callback, value):
+    try:
+        callback(value)
+    except Exception:
+        # 窗口关闭或订阅者异常不能阻断管道读取，否则 FFmpeg 可能死锁。
+        _LOG.exception("任务回调失败")
 
 
 def _on_progress_line(task, line, cb):
@@ -224,7 +297,7 @@ def _parse_hms(text):
 def _emit(task, cb, force=False):
     if not cb:
         return
-    now = time.time()
+    now = time.monotonic()
     if force or now - task._last_emit >= 0.2:
         task._last_emit = now
-        cb(task)
+        _call(cb, task)

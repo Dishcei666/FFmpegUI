@@ -9,9 +9,9 @@ import re
 import subprocess
 
 from .presets import get_preset
+from . import settings
+from .filters import join_filters, split_video_filters
 
-FFMPEG = os.environ.get("FFMPEG_PATH", "ffmpeg")
-FFPROBE = os.environ.get("FFPROBE_PATH", "ffprobe")
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 # 精确剪切模式下可选的编码预设（取自 presets.py）
@@ -60,7 +60,8 @@ def build_segment(src, start, end, mode, encode_preset_id, transform):
 
     preset = get_preset(encode_preset_id) or get_preset("x264-hq")
     inp = ["-ss", _f(start), "-t", _f(duration)]
-    vf = build_vf(transform)
+    encode_args, preset_vf = split_video_filters(preset["args"])
+    vf = join_filters(build_vf(transform), preset_vf)
     speed = float(transform.get("speed") or 1.0)
 
     if _has_speed(transform) and transform.get("has_audio"):
@@ -69,9 +70,9 @@ def build_segment(src, start, end, mode, encode_preset_id, transform):
         fc = (f"[0:v]{vf}[v];[0:a]atempo={tempo:.4f}[a]"
               if vf else f"[0:v]setpts={1.0 / speed:.5f}*PTS[v];[0:a]atempo={tempo:.4f}[a]")
         out = ["-filter_complex", fc, "-map", "[v]", "-map", "[a]",
-               *preset["args"]]
+               *encode_args]
     else:
-        out = (["-vf", vf] if vf else []) + list(preset["args"])
+        out = (["-vf", vf] if vf else []) + encode_args
     return inp, out, "mp4", preset["name"]
 
 
@@ -81,6 +82,8 @@ def build_merge(src, segments, encode_preset_id, transform):
     返回 (input_args, out_args, ext, label, total_duration)，input_args 已含全部 -i。
     """
     preset = get_preset(encode_preset_id) or get_preset("x264-hq")
+    transform = transform or {}
+    encode_args, preset_vf = split_video_filters(preset["args"])
     inp = []
     total = 0.0
     for start, end in segments:
@@ -90,7 +93,7 @@ def build_merge(src, segments, encode_preset_id, transform):
 
     n = len(segments)
     has_audio = bool(transform.get("has_audio"))
-    vf = build_vf(transform)
+    vf = join_filters(build_vf(transform), preset_vf)
     speed = float(transform.get("speed") or 1.0)
 
     v_labels = "".join(f"[{i}:v]" for i in range(n))
@@ -113,13 +116,13 @@ def build_merge(src, segments, encode_preset_id, transform):
     out = ["-filter_complex", graph, "-map", v_map]
     if a_map:
         out += ["-map", a_map]
-    out += list(preset["args"])
-    return inp, out, "mp4", preset["name"], total
+    out += encode_args
+    return inp, out, "mp4", preset["name"], total / speed
 
 
 def probe_keyframes(path, timeout=30):
     """返回关键帧时间点列表（秒）。文件大或失败时抛异常/超时，UI 应降级。"""
-    cmd = [FFPROBE, "-v", "quiet", "-select_streams", "v:0",
+    cmd = [settings.ffprobe(), "-v", "quiet", "-select_streams", "v:0",
            "-show_entries", "packet=pts_time,flags", "-of", "csv=p=0", path]
     proc = subprocess.run(cmd, capture_output=True, timeout=timeout,
                           creationflags=_NO_WINDOW)
@@ -140,10 +143,12 @@ def probe_keyframes(path, timeout=30):
 
 def detect_crop(path, sample_seconds=12):
     """用 cropdetect 检测黑边，返回 'w:h:x:y' 字符串；检测不到返回 None。"""
-    cmd = [FFMPEG, "-hide_banner", "-t", str(sample_seconds), "-i", path,
+    cmd = [settings.ffmpeg(), "-hide_banner", "-nostdin", "-t", str(sample_seconds), "-i", path,
            "-vf", "cropdetect", "-f", "null", "-"]
     proc = subprocess.run(cmd, capture_output=True, timeout=120,
                           creationflags=_NO_WINDOW)
+    if proc.returncode != 0:
+        raise RuntimeError("ffmpeg 黑边检测失败")
     text = proc.stderr.decode("utf-8", "ignore")
     found = re.findall(r"crop=(\d+:\d+:\d+:\d+)", text)
     return found[-1] if found else None

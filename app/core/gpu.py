@@ -57,6 +57,8 @@ def pick_default(results):
 
 def apply_hw_args(args, encoder):
     """把 libx264 参数替换为硬件编码参数；不含 libx264 原样返回。"""
+    if encoder not in CANDIDATES:
+        return list(args)
     out = list(args)
     replaced = False
     for i in range(len(out) - 1):
@@ -86,7 +88,14 @@ def apply_hw_args(args, encoder):
     elif encoder == "h264_qsv":
         rename_flag("-crf", "-global_quality")
     elif encoder == "h264_amf":
+        crf = next((out[i + 1] for i in range(len(out) - 1)
+                    if out[i] == "-crf"), None)
         drop_flag("-crf")
         drop_flag("-preset")                # AMF 预设名不同，用质量档
         out += ["-quality", "quality"]
+        if crf is not None:
+            # AMF 的 CQP 不是 CRF，但能保留预设间的量化等级差异。
+            # 使用长期支持的 cqp/qp_*，避免依赖新版才提供的 QVBR。
+            qp = str(max(0, min(51, round(float(crf)))))
+            out += ["-rc", "cqp", "-qp_i", qp, "-qp_p", qp, "-qp_b", qp]
     return out

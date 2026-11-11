@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """跨页面共享的小控件：拖放区、预设卡片、默认输出目录应用。"""
 import os
+import shutil
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton,
@@ -8,14 +9,42 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton,
 
 
 def apply_default_out_dir(page, *chips):
-    """若设置里配置了默认输出目录，应用到页面并更新按钮文案。"""
+    """更新跟随全局默认值的页面，保留页面手动选择的目录。"""
     from app.core import settings
+    if chips:
+        page._out_dir_chips = chips
+    if getattr(page, "_out_dir_is_custom", False):
+        return
     out_dir = settings.get("out_dir")
-    if out_dir and os.path.isdir(out_dir):
-        page._out_dir = out_dir
-        shown = out_dir if len(out_dir) <= 44 else "…" + out_dir[-43:]
-        for chip in chips:
-            chip.setText(f"📁  输出到：{shown}")
+    page._out_dir = out_dir if out_dir and os.path.isdir(out_dir) else None
+    _update_out_dir_chips(page)
+
+
+def set_page_out_dir(page, directory):
+    page._out_dir_is_custom = True
+    page._out_dir = directory
+    _update_out_dir_chips(page)
+
+
+def _update_out_dir_chips(page):
+    directory = page._out_dir
+    shown = (directory if len(directory) <= 44 else "…" + directory[-43:]) \
+        if directory else "与源文件相同"
+    for chip in getattr(page, "_out_dir_chips", ()):
+        chip.setText(f"📁  输出到：{shown}")
+
+
+def resolve_ffplay():
+    """优先显式覆盖，其次使用所配置 FFmpeg 旁边的播放器。"""
+    from app.core import settings
+    override = os.environ.get("FFPLAY_PATH")
+    if override:
+        return override
+    ffmpeg = settings.ffmpeg()
+    executable = shutil.which(ffmpeg) or ffmpeg
+    sibling = os.path.join(os.path.dirname(os.path.abspath(executable)),
+                           "ffplay.exe" if os.name == "nt" else "ffplay")
+    return sibling if os.path.isfile(sibling) else "ffplay"
 
 
 class DropZone(QFrame):
